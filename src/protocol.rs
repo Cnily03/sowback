@@ -1,15 +1,12 @@
+use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use bincode::{Encode, Decode};
 
 /// Messages exchanged between client and server
 #[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub enum Message {
     /// Client authentication request
-    Auth {
-        token: String,
-        client_id: String,
-    },
+    Auth { token: String, client_id: String },
     /// Server authentication response
     AuthResponse {
         success: bool,
@@ -29,13 +26,9 @@ pub enum Message {
         error: Option<String>,
     },
     /// Heartbeat message
-    Heartbeat {
-        timestamp: u64,
-    },
+    Heartbeat { timestamp: u64 },
     /// Heartbeat response
-    HeartbeatResponse {
-        timestamp: u64,
-    },
+    HeartbeatResponse { timestamp: u64 },
     /// New connection request from server to client
     NewConnection {
         proxy_id: String,
@@ -53,13 +46,9 @@ pub enum Message {
         data: Vec<u8>,
     },
     /// Close connection
-    CloseConnection {
-        connection_id: String,
-    },
+    CloseConnection { connection_id: String },
     /// Error message
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 impl Message {
@@ -119,11 +108,11 @@ impl Frame {
         let message_data = bincode::encode_to_vec(&self.message, config)
             .map_err(|e| anyhow::anyhow!("Serialization error: {:?}", e))?;
         let length = message_data.len() as u32;
-        
+
         let mut result = Vec::new();
         result.extend_from_slice(&length.to_be_bytes());
         result.extend_from_slice(&message_data);
-        
+
         Ok(result)
     }
 
@@ -133,7 +122,7 @@ impl Frame {
         }
 
         let length = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
-        
+
         if data.len() < 4 + length {
             return Err(anyhow::anyhow!("Insufficient data for message"));
         }
@@ -142,7 +131,13 @@ impl Frame {
         let config = bincode::config::standard();
         let (message, _): (Message, usize) = bincode::decode_from_slice(message_data, config)
             .map_err(|e| anyhow::anyhow!("Deserialization error: {:?}", e))?;
-        
-        Ok((Frame { length: length as u32, message }, 4 + length))
+
+        Ok((
+            Frame {
+                length: length as u32,
+                message,
+            },
+            4 + length,
+        ))
     }
 }

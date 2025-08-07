@@ -82,7 +82,9 @@ impl ServiceConfig {
     pub fn parse(service_str: &str) -> Result<Self> {
         let parts: Vec<&str> = service_str.split(':').collect();
         if parts.len() != 3 {
-            return Err(anyhow::anyhow!("Invalid service format. Expected: local_ip:local_port:remote_port"));
+            return Err(anyhow::anyhow!(
+                "Invalid service format. Expected: local_ip:local_port:remote_port"
+            ));
         }
 
         let name = service_str.to_string();

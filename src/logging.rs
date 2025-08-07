@@ -1,8 +1,8 @@
 use colored::*;
-use std::sync::{Mutex, OnceLock};
 use std::fmt;
-use tracing_subscriber::fmt::time::FormatTime;
+use std::sync::{Mutex, OnceLock};
 use tracing_subscriber::field::Visit;
+use tracing_subscriber::fmt::time::FormatTime;
 
 /// Global logging configuration
 static LOGGER_CONFIG: OnceLock<Mutex<LoggerConfig>> = OnceLock::new();
@@ -52,14 +52,14 @@ where
         struct ModeVisitor {
             mode_value: Option<u8>,
         }
-        
+
         impl Visit for ModeVisitor {
             fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
                 if field.name() == "mode" {
                     self.mode_value = Some(value as u8);
                 }
             }
-            
+
             fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
                 if field.name() == "mode" {
                     if let Ok(val) = format!("{value:?}").parse::<u8>() {
@@ -68,7 +68,7 @@ where
                 }
             }
         }
-        
+
         let mut visitor = ModeVisitor { mode_value: None };
         event.record(&mut visitor);
 
@@ -83,15 +83,30 @@ where
         }
     }
 
-    fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, id: &tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        id: &tracing::span::Id,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
         self.inner.on_new_span(attrs, id, ctx);
     }
 
-    fn on_record(&self, id: &tracing::span::Id, values: &tracing::span::Record<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
+    fn on_record(
+        &self,
+        id: &tracing::span::Id,
+        values: &tracing::span::Record<'_>,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
         self.inner.on_record(id, values, ctx);
     }
 
-    fn on_follows_from(&self, id: &tracing::span::Id, follows: &tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+    fn on_follows_from(
+        &self,
+        id: &tracing::span::Id,
+        follows: &tracing::span::Id,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
         self.inner.on_follows_from(id, follows, ctx);
     }
 
@@ -107,7 +122,12 @@ where
         self.inner.on_close(id, ctx);
     }
 
-    fn on_id_change(&self, old: &tracing::span::Id, new: &tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+    fn on_id_change(
+        &self,
+        old: &tracing::span::Id,
+        new: &tracing::span::Id,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
         self.inner.on_id_change(old, new, ctx);
     }
 }
@@ -125,19 +145,21 @@ impl FormatTime for LocalTimeShort {
 
 /// Initialize the logging system
 pub fn init_logger(log_file: Option<String>, verbose: bool) {
-    let config = LoggerConfig { log_file: log_file.clone(), verbose };
+    let config = LoggerConfig {
+        log_file: log_file.clone(),
+        verbose,
+    };
     LOGGER_CONFIG.set(Mutex::new(config.clone())).unwrap();
     // Initialize tracing subscriber with the provided configuration
     init_tracing(&config);
 }
 
-
 /// Initialize tracing subscriber with different modes
 pub fn init_tracing(config: &LoggerConfig) {
     use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Layer};
-    
+
     let env_filter_base = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
-    
+
     // Create console brief layer with conditional logging
     let console_brief_layer = ModeLayer::new(
         fmt::layer()
@@ -146,9 +168,10 @@ pub fn init_tracing(config: &LoggerConfig) {
             .with_thread_names(false)
             .with_ansi(true)
             .with_timer(LocalTimeShort),
-        LogMode::ConsoleBrief
-    ).boxed();
-    
+        LogMode::ConsoleBrief,
+    )
+    .boxed();
+
     // Create console detail layer with conditional logging
     let console_detail_layer = ModeLayer::new(
         fmt::layer()
@@ -156,14 +179,15 @@ pub fn init_tracing(config: &LoggerConfig) {
             .with_thread_ids(false)
             .with_thread_names(false)
             .with_ansi(true),
-        LogMode::ConsoleDetail
-    ).boxed();
-    
+        LogMode::ConsoleDetail,
+    )
+    .boxed();
+
     // Create optional file JSON layer
     let file_json_layer = if let Some(log_file_path) = &config.log_file {
         let file_appender = tracing_appender::rolling::never(".", log_file_path);
         let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-        
+
         let layer = ModeLayer::new(
             fmt::layer()
                 .with_writer(non_blocking)
@@ -172,21 +196,22 @@ pub fn init_tracing(config: &LoggerConfig) {
                 .with_thread_names(true)
                 .with_ansi(false)
                 .json(),
-            LogMode::FileJson
-        ).boxed();
-        
+            LogMode::FileJson,
+        )
+        .boxed();
+
         // Keep the guard alive for the duration of the program
         std::mem::forget(_guard);
         Some(layer)
     } else {
         None
     };
-    
+
     // Combine all layers
     let registry = tracing_subscriber::registry()
         .with(console_brief_layer)
         .with(console_detail_layer);
-    
+
     if let Some(file_layer) = file_json_layer {
         registry.with(file_layer).init();
     } else {
@@ -220,49 +245,48 @@ pub fn format_client_info(name: Option<&str>, addr: &str) -> String {
 
 /// Formats service configuration for display with color coding
 pub fn format_service_config(local_ip: &str, local_port: u16, remote_port: u16) -> String {
-    format!("{}:{} -> :{}", local_ip.magenta(), local_port.to_string().magenta(), remote_port.to_string().green())
+    format!(
+        "{}:{} -> :{}",
+        local_ip.magenta(),
+        local_port.to_string().magenta(),
+        remote_port.to_string().green()
+    )
 }
 
 #[macro_export]
 macro_rules! mode_log {
-    () => {
-        {
-            let config = $crate::logging::get_logger_config();
-            if config.verbose {
-                $crate::logging::LogMode::FileJson as u8 | $crate::logging::LogMode::ConsoleDetail as u8
-            } else {
-                $crate::logging::LogMode::FileJson as u8
-            }
+    () => {{
+        let config = $crate::logging::get_logger_config();
+        if config.verbose {
+            $crate::logging::LogMode::FileJson as u8 | $crate::logging::LogMode::ConsoleDetail as u8
+        } else {
+            $crate::logging::LogMode::FileJson as u8
         }
-    };
+    }};
 }
 
 #[macro_export]
 macro_rules! mode_console {
-    () => {
-        {
-            let config = $crate::logging::get_logger_config();
-            if config.verbose {
-                0
-            } else {
-                $crate::logging::LogMode::ConsoleBrief as u8
-            }
+    () => {{
+        let config = $crate::logging::get_logger_config();
+        if config.verbose {
+            0
+        } else {
+            $crate::logging::LogMode::ConsoleBrief as u8
         }
-    };
+    }};
 }
 
 #[macro_export]
 macro_rules! mode_multi {
-    () => {
-        {
-            let config = $crate::logging::get_logger_config();
-            if config.verbose {
-                $crate::logging::LogMode::FileJson as u8 | $crate::logging::LogMode::ConsoleDetail as u8
-            } else {
-                $crate::logging::LogMode::FileJson as u8 | $crate::logging::LogMode::ConsoleBrief as u8
-            }
+    () => {{
+        let config = $crate::logging::get_logger_config();
+        if config.verbose {
+            $crate::logging::LogMode::FileJson as u8 | $crate::logging::LogMode::ConsoleDetail as u8
+        } else {
+            $crate::logging::LogMode::FileJson as u8 | $crate::logging::LogMode::ConsoleBrief as u8
         }
-    };
+    }};
 }
 
 /// Detail logging.
@@ -297,7 +321,6 @@ macro_rules! log_debug {
     };
 }
 
-
 /// Only brief logging. Use `log_info` to record and trace.
 #[macro_export]
 macro_rules! console_info {
@@ -329,8 +352,6 @@ macro_rules! console_debug {
         tracing::debug!(mode = $crate::mode_console!(), $($arg)*);
     };
 }
-
-
 
 /// Multi brief console logging and detail logging.
 #[macro_export]

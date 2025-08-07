@@ -1,5 +1,5 @@
-use anyhow::Result;
 use crate::protocol::Frame;
+use anyhow::Result;
 
 /// Utility for reading framed messages from a stream buffer
 pub struct FrameReader {
@@ -9,9 +9,7 @@ pub struct FrameReader {
 impl FrameReader {
     /// Creates a new frame reader with an empty buffer
     pub fn new() -> Self {
-        Self {
-            buffer: Vec::new(),
-        }
+        Self { buffer: Vec::new() }
     }
 
     /// Adds new data to the internal buffer
@@ -29,9 +27,9 @@ impl FrameReader {
         // Read frame length
         let length = u32::from_be_bytes([
             self.buffer[0],
-            self.buffer[1], 
+            self.buffer[1],
             self.buffer[2],
-            self.buffer[3]
+            self.buffer[3],
         ]) as usize;
 
         // Check if we have the complete frame

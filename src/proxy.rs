@@ -1,7 +1,7 @@
-use tokio::net::TcpStream;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{error, debug};
 use anyhow::Result;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tracing::{debug, error};
 
 /// Bidirectional data forwarding between two TCP streams
 pub async fn forward_data(mut stream1: TcpStream, mut stream2: TcpStream) -> Result<()> {
