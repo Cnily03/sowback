@@ -1,0 +1,35 @@
+[package]
+name = "sowback"
+version = "0.1.0"
+edition = "2021"
+authors = ["sowback"]
+description = "Multi-server reverse proxy tool, supporting both config or command line execution."
+license = "MIT"
+
+[[bin]]
+name = "sowback"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.37", features = ["full"] }
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.9.5"
+anyhow = "1.0"
+thiserror = "2.0.12"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.8", features = ["v4"] }
+aes-gcm = "0.10"
+rand = "0.9.2"
+sha2 = "0.10"
+hkdf = "0.12"
+futures-util = "0.3"
+bytes = "1.6"
+bincode = "2.0.1"
+colored = "3.0"
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3.10"

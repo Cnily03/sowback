@@ -1,6 +1,6 @@
 # sowback
 
-Multi-server reverse proxy cli, supporting both config or command line execution.
+Multi-server reverse proxy tool, supporting both config or command line execution.
 
 ## License
 

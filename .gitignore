@@ -5,3 +5,5 @@ target/
 *.log
 .env.local
 .env.*.local
+*.zip
+*.bak
