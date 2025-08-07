@@ -1,8 +1,8 @@
-use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit, aead::Aead};
+use aes_gcm::{aead::Aead, Aes256Gcm, Key, KeyInit, Nonce};
+use anyhow::{anyhow, Result};
 use hkdf::Hkdf;
 use rand::RngCore;
 use sha2::Sha256;
-use anyhow::{Result, anyhow};
 
 /// Cryptographic context for secure communication between client and server
 pub struct CryptoContext {
@@ -37,7 +37,9 @@ impl CryptoContext {
         rand::rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
-        let ciphertext = self.cipher.encrypt(nonce, data)
+        let ciphertext = self
+            .cipher
+            .encrypt(nonce, data)
             .map_err(|_| anyhow!("Encryption failed"))?;
 
         // Prepend nonce to ciphertext
@@ -55,7 +57,9 @@ impl CryptoContext {
         let (nonce_bytes, ciphertext) = encrypted_data.split_at(12);
         let nonce = Nonce::from_slice(nonce_bytes);
 
-        let plaintext = self.cipher.decrypt(nonce, ciphertext)
+        let plaintext = self
+            .cipher
+            .decrypt(nonce, ciphertext)
             .map_err(|_| anyhow!("Decryption failed"))?;
 
         Ok(plaintext)
@@ -70,14 +74,14 @@ mod tests {
     fn test_crypto_roundtrip() {
         let token = "test_token";
         let client_id = "test_client";
-        
+
         let session_key = CryptoContext::derive_session_key(token, client_id).unwrap();
         let crypto = CryptoContext::new(&session_key).unwrap();
-        
+
         let original_data = b"Hello, world!";
         let encrypted = crypto.encrypt(original_data).unwrap();
         let decrypted = crypto.decrypt(&encrypted).unwrap();
-        
+
         assert_eq!(original_data, decrypted.as_slice());
     }
 }

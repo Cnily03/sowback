@@ -1,19 +1,19 @@
+use anyhow::Result;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, RwLock};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
-use anyhow::Result;
 
 use crate::config::ServerConfig;
-use crate::protocol::{Message, Frame};
 use crate::crypto::CryptoContext;
+use crate::logging::{format_service_config, format_uuid};
+use crate::protocol::{Frame, Message};
 use crate::utils::FrameReader;
-use crate::logging::{format_uuid, format_service_config};
-use crate::{log_info, log_warn, log_error, log_debug, info, warn, error, debug};
+use crate::{console_info, debug, error, info, log_info, warn};
 
 /// Main server structure that handles client connections and proxy management
 pub struct Server {
@@ -89,19 +89,19 @@ impl Server {
 
     /// Handles a single client connection through its entire lifecycle
     async fn handle_client(&self, mut stream: TcpStream, addr: SocketAddr) -> Result<()> {
-        log_info!(&format!("New client connection from {}", addr));
+        log_info!("New client connection from {}", addr);
 
         // Read authentication message
         let mut frame_reader = FrameReader::new();
         let mut buffer = [0u8; 4096];
-        
+
         let n = timeout(Duration::from_secs(30), stream.read(&mut buffer)).await??;
         if n == 0 {
             return Err(anyhow::anyhow!("Connection closed during auth"));
         }
 
         frame_reader.feed_data(&buffer[..n]);
-        
+
         let frame = match frame_reader.try_read_frame()? {
             Some(frame) => frame,
             None => return Err(anyhow::anyhow!("Incomplete auth frame")),
@@ -133,8 +133,8 @@ impl Server {
                 let response_frame = Frame::new(response);
                 stream.write_all(&response_frame.serialize()?).await?;
 
-                log_info!(&format!("Client {} authenticated successfully", client_id));
-                info!("Client {} authenticated", format_uuid(&client_id, "client"));
+                log_info!("Client {} authenticated successfully", client_id);
+                console_info!("Client {} authenticated", format_uuid(&client_id, "client"));
                 (client_id, crypto)
             }
             _ => return Err(anyhow::anyhow!("Expected auth message")),
@@ -149,7 +149,10 @@ impl Server {
             proxies: HashMap::new(),
         };
 
-        self.clients.write().await.insert(client_id.clone(), client_conn);
+        self.clients
+            .write()
+            .await
+            .insert(client_id.clone(), client_conn);
 
         // Handle incoming messages from client
         let clients = self.clients.clone();
@@ -166,7 +169,7 @@ impl Server {
             let proxy_listeners = proxy_listeners.clone();
             let proxy_connections = proxy_connections.clone();
             let client_id_for_cleanup = client_id.clone();
-            
+
             tokio::spawn(async move {
                 let mut frame_reader = FrameReader::new();
                 let mut buffer = [0u8; 4096];
@@ -176,7 +179,7 @@ impl Server {
                         Ok(0) => break,
                         Ok(n) => {
                             frame_reader.feed_data(&buffer[..n]);
-                            
+
                             while let Some(frame) = frame_reader.try_read_frame().unwrap_or(None) {
                                 match Self::handle_client_message(
                                     frame.message,
@@ -185,7 +188,9 @@ impl Server {
                                     &proxy_listeners,
                                     &proxy_connections,
                                     &bind_addr,
-                                ).await {
+                                )
+                                .await
+                                {
                                     Ok(_) => {}
                                     Err(e) => {
                                         error!("Error handling client message: {}", e);
@@ -202,8 +207,17 @@ impl Server {
                 }
 
                 // Immediately clean up when connection is lost
-                Self::cleanup_client(&client_id_for_cleanup, &clients, &proxy_listeners, &proxy_connections).await;
-                log_info!(&format!("Client {} disconnected", format_uuid(&client_id_for_cleanup, "client")));
+                Self::cleanup_client(
+                    &client_id_for_cleanup,
+                    &clients,
+                    &proxy_listeners,
+                    &proxy_connections,
+                )
+                .await;
+                log_info!(
+                    "Client {} disconnected",
+                    format_uuid(&client_id_for_cleanup, "client")
+                );
             })
         };
 
@@ -235,8 +249,17 @@ impl Server {
         }
 
         // Additional cleanup in case read_task didn't handle it
-        Self::cleanup_client(&client_id_clone, &self.clients, &self.proxy_listeners, &self.proxy_connections).await;
-        log_info!(&format!("Client {} connection closed", format_uuid(&client_id_clone, "client")));
+        Self::cleanup_client(
+            &client_id_clone,
+            &self.clients,
+            &self.proxy_listeners,
+            &self.proxy_connections,
+        )
+        .await;
+        log_info!(
+            "Client {} connection closed",
+            format_uuid(&client_id_clone, "client")
+        );
 
         Ok(())
     }
@@ -261,7 +284,7 @@ impl Server {
         // Clean up proxy listeners for this client
         let mut proxy_listeners_guard = proxy_listeners.write().await;
         let mut listeners_to_remove = Vec::new();
-        
+
         for (port, listener_info) in proxy_listeners_guard.iter() {
             if listener_info.client_id == client_id {
                 listeners_to_remove.push(*port);
@@ -269,29 +292,40 @@ impl Server {
                 let _ = listener_info.cancel_tx.send(());
             }
         }
-        
+
         for port in listeners_to_remove {
             proxy_listeners_guard.remove(&port);
-            log_info!(&format!("Cleaned up service listener on port {} for client {}", 
-                port, format_uuid(client_id, "client")));
+            log_info!(
+                "Cleaned up service listener on port {} for client {}",
+                port,
+                format_uuid(client_id, "client")
+            );
         }
         drop(proxy_listeners_guard);
 
         // Clean up any active proxy connections for this client
         let mut proxy_connections_guard = proxy_connections.write().await;
         let mut connections_to_remove = Vec::new();
-        
+
         // Find all connections belonging to this client
         for (connection_id, connection_info) in proxy_connections_guard.iter() {
             if connection_info.client_id == client_id {
                 connections_to_remove.push(connection_id.clone());
             }
         }
-        
+
         for connection_id in connections_to_remove {
             if let Some(_) = proxy_connections_guard.remove(&connection_id) {
-                log_info!(&format!("Cleaned up connection {} for client {}", 
-                    format_uuid(&connection_id, "conn"), format_uuid(client_id, "client")));
+                log_info!(
+                    "Cleaned up proxy connection {} for client {}",
+                    connection_id,
+                    client_id
+                );
+                console_info!(
+                    "Cleaned up connection {} for client {}",
+                    format_uuid(&connection_id, "conn"),
+                    format_uuid(client_id, "client")
+                );
             }
         }
     }
@@ -306,10 +340,17 @@ impl Server {
         bind_addr: &str,
     ) -> Result<()> {
         match message {
-            Message::Data { connection_id, data } => {
+            Message::Data {
+                connection_id,
+                data,
+            } => {
                 // Forward data to proxy connection
-                debug!("Received {} bytes from client for connection {}", data.len(), connection_id);
-                
+                debug!(
+                    "Received {} bytes from client for connection {}",
+                    data.len(),
+                    connection_id
+                );
+
                 let proxy_connections_guard = proxy_connections.read().await;
                 if let Some(proxy_conn) = proxy_connections_guard.get(&connection_id) {
                     if let Err(e) = proxy_conn.sender.send(data) {
@@ -319,10 +360,20 @@ impl Server {
                     warn!("Proxy connection {} not found", connection_id);
                 }
             }
-            Message::ProxyConfig { local_ip, local_port, remote_port } => {
-                log_info!(&format!("Setting up proxy for client {}: {}:{} -> :{}", 
-                      client_id, local_ip, local_port, remote_port));
-                info!("Setting up service for client {}: {}", 
+            Message::ProxyConfig {
+                local_ip,
+                local_port,
+                remote_port,
+            } => {
+                log_info!(
+                    "Setting up proxy for client {}: {}:{} -> :{}",
+                    client_id,
+                    local_ip,
+                    local_port,
+                    remote_port
+                );
+                console_info!(
+                    "Setting up service for client {}: {}",
                     format_uuid(client_id, "client"),
                     format_service_config(&local_ip, local_port, remote_port)
                 );
@@ -359,25 +410,25 @@ impl Server {
                     match TcpListener::bind(&listen_addr).await {
                         Ok(listener) => {
                             let listener = Arc::new(listener);
-                            
+
                             // Create cancel channel for this listener
                             let (cancel_tx, cancel_rx) = mpsc::unbounded_channel();
-                            
+
                             let listener_info = ProxyListenerInfo {
                                 listener: listener.clone(),
                                 client_id: client_id.to_string(),
                                 proxy_id: proxy_id.clone(),
                                 cancel_tx,
                             };
-                            
+
                             listeners.insert(remote_port, listener_info);
-                            
+
                             // Start accepting connections for this proxy
                             let clients_clone = clients.clone();
                             let proxy_connections_clone = proxy_connections.clone();
                             let client_id_clone = client_id.to_string();
                             let proxy_id_clone = proxy_id.clone();
-                            
+
                             tokio::spawn(async move {
                                 Self::handle_proxy_connections(
                                     listener,
@@ -386,21 +437,28 @@ impl Server {
                                     client_id_clone,
                                     proxy_id_clone,
                                     cancel_rx,
-                                ).await;
+                                )
+                                .await;
                             });
 
-                            log_info!(&format!("Proxy listener started on {}", listen_addr));
+                            log_info!("Proxy listener started on {}", listen_addr);
                         }
                         Err(e) => {
-                            error!("Failed to start proxy listener on port {}: {}", remote_port, e);
-                            
+                            error!(
+                                "Failed to start proxy listener on port {}: {}",
+                                remote_port, e
+                            );
+
                             // Send error response
                             let clients_guard = clients.read().await;
                             if let Some(client) = clients_guard.get(client_id) {
                                 let response = Message::ProxyConfigResponse {
                                     success: false,
                                     proxy_id: None,
-                                    error: Some(format!("Failed to bind port {}: {}", remote_port, e)),
+                                    error: Some(format!(
+                                        "Failed to bind port {}: {}",
+                                        remote_port, e
+                                    )),
                                 };
                                 let _ = client.sender.send(response);
                             }
@@ -415,7 +473,10 @@ impl Server {
                                 let response = Message::ProxyConfigResponse {
                                     success: false,
                                     proxy_id: None,
-                                    error: Some(format!("Port {} already in use by another client", remote_port)),
+                                    error: Some(format!(
+                                        "Port {} already in use by another client",
+                                        remote_port
+                                    )),
                                 };
                                 let _ = client.sender.send(response);
                             }
@@ -425,7 +486,7 @@ impl Server {
             }
             Message::Heartbeat { timestamp } => {
                 debug!("Heartbeat from client {}: {}", client_id, timestamp);
-                
+
                 let clients_guard = clients.read().await;
                 if let Some(client) = clients_guard.get(client_id) {
                     let response = Message::HeartbeatResponse { timestamp };
@@ -433,7 +494,10 @@ impl Server {
                 }
             }
             _ => {
-                warn!("Unexpected message from client {}: {:?}", client_id, message);
+                warn!(
+                    "Unexpected message from client {}: {:?}",
+                    client_id, message
+                );
             }
         }
 
@@ -453,7 +517,7 @@ impl Server {
             tokio::select! {
                 // Check for cancellation
                 _ = cancel_rx.recv() => {
-                    log_info!(&format!("Proxy listener for client {} cancelled", client_id));
+                    log_info!("Proxy listener for client {} cancelled", client_id);
                     break;
                 }
                 // Accept new connections
@@ -461,21 +525,21 @@ impl Server {
                     match result {
                         Ok((stream, addr)) => {
                             debug!("New proxy connection from {} for client {}", addr, client_id);
-                            
+
                             // Check if client still exists
                             let client_exists = {
                                 let clients_guard = clients.read().await;
                                 clients_guard.contains_key(&client_id)
                             };
-                            
+
                             if !client_exists {
-                                log_info!(&format!("Client {} no longer exists, stopping proxy listener", format_uuid(&client_id, "client")));
+                                log_info!("Client {} no longer exists, stopping proxy listener", format_uuid(&client_id, "client"));
                                 drop(stream);
                                 break; // Exit the loop instead of continuing
                             }
-                            
+
                             let connection_id = Uuid::new_v4().to_string();
-                            
+
                             // Notify client about new connection
                             {
                                 let clients_guard = clients.read().await;
@@ -499,7 +563,7 @@ impl Server {
                             let proxy_connections_clone = proxy_connections.clone();
                             let client_id_clone = client_id.clone();
                             let connection_id_clone = connection_id.clone();
-                            
+
                             tokio::spawn(async move {
                                 Self::handle_proxy_stream(
                                     stream,
@@ -529,32 +593,35 @@ impl Server {
         connection_id: String,
     ) {
         let (mut stream_read, mut stream_write) = stream.into_split();
-        
+
         // Channel for receiving data from client
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
-        
+
         // Store proxy connection info
         {
             let mut proxy_connections_guard = proxy_connections.write().await;
-            proxy_connections_guard.insert(connection_id.clone(), ProxyConnectionInfo {
-                sender: tx,
-                client_id: client_id.clone(),
-            });
+            proxy_connections_guard.insert(
+                connection_id.clone(),
+                ProxyConnectionInfo {
+                    sender: tx,
+                    client_id: client_id.clone(),
+                },
+            );
         }
-        
+
         let connection_id_clone = connection_id.clone();
         let proxy_connections_clone = proxy_connections.clone();
 
         // Task to read from proxy and send to client
         let read_task = tokio::spawn(async move {
             let mut buffer = [0u8; 4096];
-            
+
             loop {
                 match stream_read.read(&mut buffer).await {
                     Ok(0) => {
                         // Connection closed
                         debug!("Proxy connection {} closed", connection_id);
-                        
+
                         // Notify client about connection close
                         let clients_guard = clients.read().await;
                         if let Some(client) = clients_guard.get(&client_id) {
@@ -569,7 +636,7 @@ impl Server {
                         // Forward data to client
                         let data = buffer[..n].to_vec();
                         debug!("Forwarding {} bytes from proxy to client {}", n, client_id);
-                        
+
                         let clients_guard = clients.read().await;
                         if let Some(client) = clients_guard.get(&client_id) {
                             let message = Message::Data {
@@ -615,7 +682,7 @@ impl Server {
             let mut proxy_connections_guard = proxy_connections.write().await;
             proxy_connections_guard.remove(&connection_id_clone);
         }
-        
+
         debug!("Proxy connection {} handler finished", connection_id_clone);
     }
 }

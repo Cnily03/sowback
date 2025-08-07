@@ -1,9 +1,8 @@
 use colored::*;
-use serde_json::json;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::sync::{Mutex, OnceLock};
-use chrono::{DateTime, Local};
+use std::fmt;
+use tracing_subscriber::fmt::time::FormatTime;
+use tracing_subscriber::field::Visit;
 
 /// Global logging configuration
 static LOGGER_CONFIG: OnceLock<Mutex<LoggerConfig>> = OnceLock::new();
@@ -15,19 +14,184 @@ pub struct LoggerConfig {
     pub verbose: bool,
 }
 
-/// Log levels
-#[derive(Debug, Clone)]
-pub enum LogLevel {
-    Info,
-    Warn,
-    Error,
-    Debug,
+/// Log modes using bitflags
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LogMode {
+    ConsoleBrief = 1 << 0,
+    ConsoleDetail = 1 << 1,
+    FileJson = 1 << 2,
+}
+
+impl LogMode {
+    /// Check if the given mode flags contain this mode
+    pub fn matches(self, flags: u8) -> bool {
+        (flags & (self as u8)) != 0
+    }
+}
+
+/// A conditional layer that only logs events with matching mode
+pub struct ModeLayer<L> {
+    inner: L,
+    target_mode: LogMode,
+}
+
+impl<L> ModeLayer<L> {
+    pub fn new(inner: L, target_mode: LogMode) -> Self {
+        Self { inner, target_mode }
+    }
+}
+
+impl<S, L> tracing_subscriber::layer::Layer<S> for ModeLayer<L>
+where
+    S: tracing::Subscriber + for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
+    L: tracing_subscriber::layer::Layer<S>,
+{
+    /// If mode matches, continue the event to be logged to this layer.
+    fn on_event(&self, event: &tracing::Event<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        // Extract mode value from event
+        struct ModeVisitor {
+            mode_value: Option<u8>,
+        }
+        
+        impl Visit for ModeVisitor {
+            fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+                if field.name() == "mode" {
+                    self.mode_value = Some(value as u8);
+                }
+            }
+            
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "mode" {
+                    if let Ok(val) = format!("{value:?}").parse::<u8>() {
+                        self.mode_value = Some(val);
+                    }
+                }
+            }
+        }
+        
+        let mut visitor = ModeVisitor { mode_value: None };
+        event.record(&mut visitor);
+
+        // Check if this event should be logged to this layer
+        if let Some(mode_value) = visitor.mode_value {
+            if self.target_mode.matches(mode_value) {
+                self.inner.on_event(event, ctx);
+            }
+        } else {
+            // No mode field, always log
+            self.inner.on_event(event, ctx);
+        }
+    }
+
+    fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, id: &tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        self.inner.on_new_span(attrs, id, ctx);
+    }
+
+    fn on_record(&self, id: &tracing::span::Id, values: &tracing::span::Record<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        self.inner.on_record(id, values, ctx);
+    }
+
+    fn on_follows_from(&self, id: &tracing::span::Id, follows: &tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        self.inner.on_follows_from(id, follows, ctx);
+    }
+
+    fn on_enter(&self, id: &tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        self.inner.on_enter(id, ctx);
+    }
+
+    fn on_exit(&self, id: &tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        self.inner.on_exit(id, ctx);
+    }
+
+    fn on_close(&self, id: tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        self.inner.on_close(id, ctx);
+    }
+
+    fn on_id_change(&self, old: &tracing::span::Id, new: &tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        self.inner.on_id_change(old, new, ctx);
+    }
+}
+
+/// Custom time formatter that shows only hours:minutes:seconds in local time
+struct LocalTimeShort;
+
+impl FormatTime for LocalTimeShort {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> fmt::Result {
+        use chrono::Local;
+        let now = Local::now();
+        write!(w, "{}", now.format("%H:%M:%S"))
+    }
 }
 
 /// Initialize the logging system
 pub fn init_logger(log_file: Option<String>, verbose: bool) {
-    let config = LoggerConfig { log_file, verbose };
-    LOGGER_CONFIG.set(Mutex::new(config)).unwrap();
+    let config = LoggerConfig { log_file: log_file.clone(), verbose };
+    LOGGER_CONFIG.set(Mutex::new(config.clone())).unwrap();
+    // Initialize tracing subscriber with the provided configuration
+    init_tracing(&config);
+}
+
+
+/// Initialize tracing subscriber with different modes
+pub fn init_tracing(config: &LoggerConfig) {
+    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Layer};
+    
+    let env_filter_base = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    
+    // Create console brief layer with conditional logging
+    let console_brief_layer = ModeLayer::new(
+        fmt::layer()
+            .with_target(false)
+            .with_thread_ids(false)
+            .with_thread_names(false)
+            .with_ansi(true)
+            .with_timer(LocalTimeShort),
+        LogMode::ConsoleBrief
+    ).boxed();
+    
+    // Create console detail layer with conditional logging
+    let console_detail_layer = ModeLayer::new(
+        fmt::layer()
+            .with_target(true)
+            .with_thread_ids(false)
+            .with_thread_names(false)
+            .with_ansi(true),
+        LogMode::ConsoleDetail
+    ).boxed();
+    
+    // Create optional file JSON layer
+    let file_json_layer = if let Some(log_file_path) = &config.log_file {
+        let file_appender = tracing_appender::rolling::never(".", log_file_path);
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+        
+        let layer = ModeLayer::new(
+            fmt::layer()
+                .with_writer(non_blocking)
+                .with_target(true)
+                .with_thread_ids(true)
+                .with_thread_names(true)
+                .with_ansi(false)
+                .json(),
+            LogMode::FileJson
+        ).boxed();
+        
+        // Keep the guard alive for the duration of the program
+        std::mem::forget(_guard);
+        Some(layer)
+    } else {
+        None
+    };
+    
+    // Combine all layers
+    let registry = tracing_subscriber::registry()
+        .with(console_brief_layer)
+        .with(console_detail_layer);
+    
+    if let Some(file_layer) = file_json_layer {
+        registry.with(file_layer).init();
+    } else {
+        registry.init();
+    }
 }
 
 /// Get current logger configuration
@@ -59,166 +223,143 @@ pub fn format_service_config(local_ip: &str, local_port: u16, remote_port: u16) 
     format!("{}:{} -> :{}", local_ip.magenta(), local_port.to_string().magenta(), remote_port.to_string().green())
 }
 
-/// Internal logging function that handles both verbose console output and file logging
-pub fn log_message(level: LogLevel, message: &str, details: Option<serde_json::Value>) {
-    let config = get_logger_config();
-    let now: DateTime<Local> = Local::now();
-    
-    // Verbose console output
-    if config.verbose {
-        let timestamp = now.format("%Y-%m-%d %H:%M:%S");
-        let level_str = match level {
-            LogLevel::Info => "[INFO]".green().bold(),
-            LogLevel::Warn => "[WARN]".yellow().bold(),
-            LogLevel::Error => "[ERROR]".red().bold(),
-            LogLevel::Debug => "[DEBUG]".blue().bold(),
-        };
-        
-        if let Some(details) = &details {
-            println!("{} {} {} {}", timestamp.to_string().cyan(), level_str, message, 
-                     format!("details={}", details).dimmed());
-        } else {
-            println!("{} {} {}", timestamp.to_string().cyan(), level_str, message);
+#[macro_export]
+macro_rules! mode_log {
+    () => {
+        {
+            let config = $crate::logging::get_logger_config();
+            if config.verbose {
+                $crate::logging::LogMode::FileJson as u8 | $crate::logging::LogMode::ConsoleDetail as u8
+            } else {
+                $crate::logging::LogMode::FileJson as u8
+            }
         }
-    }
-    
-    // File output (JSON format)
-    if let Some(log_file) = &config.log_file {
-        let level_str = match level {
-            LogLevel::Info => "INFO",
-            LogLevel::Warn => "WARN", 
-            LogLevel::Error => "ERROR",
-            LogLevel::Debug => "DEBUG",
-        };
-        
-        let mut log_entry = json!({
-            "timestamp": now.to_rfc3339(),
-            "level": level_str,
-            "message": message
-        });
-        
-        if let Some(details) = details {
-            log_entry["details"] = details;
-        }
-        
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_file) {
-            let _ = writeln!(file, "{}", log_entry);
-        }
-    }
+    };
 }
 
-/// Console output with custom format (for non-verbose mode)
-pub fn console_message(level: LogLevel, message: &str) {
-    let config = get_logger_config();
-    
-    // Only output to console if not in verbose mode (verbose mode uses log_message)
-    if !config.verbose {
-        let now: DateTime<Local> = Local::now();
-        let timestamp = now.format("%Y-%m-%d %H:%M:%S");
-        let level_str = match level {
-            LogLevel::Info => "[INFO]".green().bold(),
-            LogLevel::Warn => "[WARN]".yellow().bold(),
-            LogLevel::Error => "[ERROR]".red().bold(),
-            LogLevel::Debug => "[DEBUG]".blue().bold(),
-        };
-        
-        println!("{} {} {}", timestamp.to_string().cyan(), level_str, message);
-    }
+#[macro_export]
+macro_rules! mode_console {
+    () => {
+        {
+            let config = $crate::logging::get_logger_config();
+            if config.verbose {
+                0
+            } else {
+                $crate::logging::LogMode::ConsoleBrief as u8
+            }
+        }
+    };
 }
 
-/// Macro for detailed logging (verbose console + file)
+#[macro_export]
+macro_rules! mode_multi {
+    () => {
+        {
+            let config = $crate::logging::get_logger_config();
+            if config.verbose {
+                $crate::logging::LogMode::FileJson as u8 | $crate::logging::LogMode::ConsoleDetail as u8
+            } else {
+                $crate::logging::LogMode::FileJson as u8 | $crate::logging::LogMode::ConsoleBrief as u8
+            }
+        }
+    };
+}
+
+/// Detail logging.
 #[macro_export]
 macro_rules! log_info {
-    ($msg:expr) => {
-        $crate::logging::log_message($crate::logging::LogLevel::Info, $msg, None);
-    };
-    ($msg:expr, $details:expr) => {
-        $crate::logging::log_message($crate::logging::LogLevel::Info, $msg, Some($details));
+    ($($arg:tt)*) => {
+        tracing::info!(mode = $crate::mode_log!(), $($arg)*);
     };
 }
 
+/// Detail logging.
 #[macro_export]
 macro_rules! log_warn {
-    ($msg:expr) => {
-        $crate::logging::log_message($crate::logging::LogLevel::Warn, $msg, None);
-    };
-    ($msg:expr, $details:expr) => {
-        $crate::logging::log_message($crate::logging::LogLevel::Warn, $msg, Some($details));
+    ($($arg:tt)*) => {
+        tracing::warn!(mode = $crate::mode_log!(), $($arg)*);
     };
 }
 
+/// Detail logging.
 #[macro_export]
 macro_rules! log_error {
-    ($msg:expr) => {
-        $crate::logging::log_message($crate::logging::LogLevel::Error, $msg, None);
-    };
-    ($msg:expr, $details:expr) => {
-        $crate::logging::log_message($crate::logging::LogLevel::Error, $msg, Some($details));
+    ($($arg:tt)*) => {
+        tracing::error!(mode = $crate::mode_log!(), $($arg)*);
     };
 }
 
+/// Detail logging.
 #[macro_export]
 macro_rules! log_debug {
-    ($msg:expr) => {
-        $crate::logging::log_message($crate::logging::LogLevel::Debug, $msg, None);
-    };
-    ($msg:expr, $details:expr) => {
-        $crate::logging::log_message($crate::logging::LogLevel::Debug, $msg, Some($details));
+    ($($arg:tt)*) => {
+        tracing::debug!(mode = $crate::mode_log!(), $($arg)*);
     };
 }
 
-/// Macro for frontend output (calls log_info! + custom console output in non-verbose mode)
+
+/// Only brief logging. Use `log_info` to record and trace.
+#[macro_export]
+macro_rules! console_info {
+    ($($arg:tt)*) => {
+        tracing::info!(mode = $crate::mode_console!(), $($arg)*);
+    };
+}
+
+/// Only brief logging. Use `log_warn` to record and trace.
+#[macro_export]
+macro_rules! console_warn {
+    ($($arg:tt)*) => {
+        tracing::warn!(mode = $crate::mode_console!(), $($arg)*);
+    };
+}
+
+/// Only brief logging. Use `log_error` to record and trace.
+#[macro_export]
+macro_rules! console_error {
+    ($($arg:tt)*) => {
+        tracing::error!(mode = $crate::mode_console!(), $($arg)*);
+    };
+}
+
+/// Only brief logging. Use `log_debug` to record and trace.
+#[macro_export]
+macro_rules! console_debug {
+    ($($arg:tt)*) => {
+        tracing::debug!(mode = $crate::mode_console!(), $($arg)*);
+    };
+}
+
+
+
+/// Multi brief console logging and detail logging.
 #[macro_export]
 macro_rules! info {
-    ($msg:expr) => {
-        $crate::log_info!($msg);
-        $crate::logging::console_message($crate::logging::LogLevel::Info, $msg);
-    };
-    ($fmt:expr, $($arg:tt)*) => {
-        let msg = format!($fmt, $($arg)*);
-        $crate::log_info!(msg.as_str());
-        $crate::logging::console_message($crate::logging::LogLevel::Info, &msg);
+    ($($arg:tt)*) => {
+        tracing::info!(mode = $crate::mode_multi!(), $($arg)*);
     };
 }
 
+/// Multi brief console logging and detail logging.
 #[macro_export]
 macro_rules! warn {
-    ($msg:expr) => {
-        $crate::log_warn!($msg);
-        $crate::logging::console_message($crate::logging::LogLevel::Warn, $msg);
-    };
-    ($fmt:expr, $($arg:tt)*) => {
-        let msg = format!($fmt, $($arg)*);
-        $crate::log_warn!(msg.as_str());
-        $crate::logging::console_message($crate::logging::LogLevel::Warn, &msg);
+    ($($arg:tt)*) => {
+        tracing::warn!(mode = $crate::mode_multi!(), $($arg)*);
     };
 }
 
+/// Multi brief console logging and detail logging.
 #[macro_export]
 macro_rules! error {
-    ($msg:expr) => {
-        $crate::log_error!($msg);
-        $crate::logging::console_message($crate::logging::LogLevel::Error, $msg);
-    };
-    ($fmt:expr, $($arg:tt)*) => {
-        let msg = format!($fmt, $($arg)*);
-        $crate::log_error!(msg.as_str());
-        $crate::logging::console_message($crate::logging::LogLevel::Error, &msg);
+    ($($arg:tt)*) => {
+        tracing::error!(mode = $crate::mode_multi!(), $($arg)*);
     };
 }
 
+/// Multi brief console logging and detail logging.
 #[macro_export]
 macro_rules! debug {
-    ($msg:expr) => {
-        $crate::log_debug!($msg);
-        $crate::logging::console_message($crate::logging::LogLevel::Debug, $msg);
-    };
-    ($fmt:expr, $($arg:tt)*) => {
-        let msg = format!($fmt, $($arg)*);
-        $crate::log_debug!(msg.as_str());
-        $crate::logging::console_message($crate::logging::LogLevel::Debug, &msg);
+    ($($arg:tt)*) => {
+        tracing::debug!(mode = $crate::mode_multi!(), $($arg)*);
     };
 }

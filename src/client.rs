@@ -1,18 +1,18 @@
+use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::{interval, timeout, Duration};
 use uuid::Uuid;
-use anyhow::Result;
 
 use crate::config::{ClientConfig, ServiceConfig};
-use crate::protocol::{Message, Frame};
 use crate::crypto::CryptoContext;
+use crate::logging::{format_service_config, format_uuid};
+use crate::protocol::{Frame, Message};
 use crate::utils::FrameReader;
-use crate::logging::{format_uuid, format_service_config};
-use crate::{log_info, log_warn, log_error, log_debug, info, warn, error, debug};
+use crate::{console_info, debug, error, info, log_info, warn};
 
 /// Main client structure that manages connections to multiple servers
 pub struct Client {
@@ -47,8 +47,11 @@ impl Client {
 
     /// Starts the client and maintains connections to all configured servers
     pub async fn run(&self) -> Result<()> {
-        log_info!(&format!("Starting client with ID: {}", self.client_id));
-        info!("sowback client started, ID: {}", format_uuid(&self.client_id, "client"));
+        log_info!("Starting client with ID: {}", self.client_id);
+        console_info!(
+            "sowback client started, ID: {}",
+            format_uuid(&self.client_id, "client")
+        );
 
         // Parse service configurations
         let mut service_configs = Vec::new();
@@ -64,16 +67,16 @@ impl Client {
 
         // Connect to all servers
         let mut tasks = Vec::new();
-        
+
         for server_addr in &self.config.servers {
             let client = self.clone();
             let server_addr = server_addr.clone();
             let service_configs = service_configs.clone();
-            
+
             let task = tokio::spawn(async move {
                 client.connect_to_server(server_addr, service_configs).await
             });
-            
+
             tasks.push(task);
         }
 
@@ -94,11 +97,14 @@ impl Client {
         service_configs: Vec<ServiceConfig>,
     ) -> Result<()> {
         loop {
-            log_info!(&format!("Connecting to server: {}", server_addr));
-            
-            match self.try_connect_to_server(&server_addr, &service_configs).await {
+            log_info!("Connecting to server: {}", server_addr);
+
+            match self
+                .try_connect_to_server(&server_addr, &service_configs)
+                .await
+            {
                 Ok(_) => {
-                    log_info!(&format!("Connection to {} closed", server_addr));
+                    log_info!("Connection to {} closed", server_addr);
                 }
                 Err(e) => {
                     error!("Connection to {} failed: {}", server_addr, e);
@@ -106,7 +112,11 @@ impl Client {
             }
 
             // Wait before reconnecting
-            log_info!(&format!("Reconnecting to {} in {} seconds", server_addr, self.config.reconnect_interval));
+            log_info!(
+                "Reconnecting to {} in {} seconds",
+                server_addr,
+                self.config.reconnect_interval
+            );
             tokio::time::sleep(Duration::from_secs(self.config.reconnect_interval)).await;
         }
     }
@@ -128,29 +138,36 @@ impl Client {
         // Read authentication response
         let mut frame_reader = FrameReader::new();
         let mut buffer = [0u8; 4096];
-        
+
         let n = timeout(Duration::from_secs(30), stream.read(&mut buffer)).await??;
         if n == 0 {
             return Err(anyhow::anyhow!("Connection closed during auth"));
         }
 
         frame_reader.feed_data(&buffer[..n]);
-        
+
         let frame = match frame_reader.try_read_frame()? {
             Some(frame) => frame,
             None => return Err(anyhow::anyhow!("Incomplete auth response")),
         };
 
         let crypto = match frame.message {
-            Message::AuthResponse { success, session_key, error } => {
+            Message::AuthResponse {
+                success,
+                session_key,
+                error,
+            } => {
                 if !success {
-                    return Err(anyhow::anyhow!("Authentication failed: {}", 
-                                             error.unwrap_or_else(|| "Unknown error".to_string())));
+                    return Err(anyhow::anyhow!(
+                        "Authentication failed: {}",
+                        error.unwrap_or_else(|| "Unknown error".to_string())
+                    ));
                 }
 
-                let session_key = session_key.ok_or_else(|| anyhow::anyhow!("No session key provided"))?;
+                let session_key =
+                    session_key.ok_or_else(|| anyhow::anyhow!("No session key provided"))?;
                 let crypto = Arc::new(CryptoContext::new(&session_key)?);
-                log_info!(&format!("Authentication successful for server: {}", server_addr));
+                log_info!("Authentication successful for server: {}", server_addr);
                 crypto
             }
             _ => return Err(anyhow::anyhow!("Expected auth response")),
@@ -158,8 +175,11 @@ impl Client {
 
         // Send service configurations
         for service_config in service_configs {
-            let service_str = format!("{}:{}:{}", service_config.local_ip, service_config.local_port, service_config.remote_port);
-            
+            let service_str = format!(
+                "{}:{}:{}",
+                service_config.local_ip, service_config.local_port, service_config.remote_port
+            );
+
             let service_message = Message::ProxyConfig {
                 local_ip: service_config.local_ip.clone(),
                 local_port: service_config.local_port,
@@ -168,26 +188,39 @@ impl Client {
             let service_frame = Frame::new(service_message);
             stream.write_all(&service_frame.serialize()?).await?;
 
-            log_info!(&format!("Sent service config '{}': {}:{} -> :{}", 
-                  service_str, service_config.local_ip, service_config.local_port, service_config.remote_port));
-            info!("Registered service '{}': {}", 
-                service_str, 
-                format_service_config(&service_config.local_ip, service_config.local_port, service_config.remote_port)
+            log_info!(
+                "Sent service config '{}': {}:{} -> :{}",
+                service_str,
+                service_config.local_ip,
+                service_config.local_port,
+                service_config.remote_port
+            );
+            console_info!(
+                "Registered service '{}': {}",
+                service_str,
+                format_service_config(
+                    &service_config.local_ip,
+                    service_config.local_port,
+                    service_config.remote_port
+                )
             );
         }
 
         // Create connection channels
         let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
-        
+
         // Store connection
         {
             let mut connections = self.connections.lock().await;
-            connections.insert(server_addr.to_string(), ServerConnection {
-                server_addr: server_addr.to_string(),
-                sender: tx,
-                crypto: Some(crypto.clone()),
-                connected: true,
-            });
+            connections.insert(
+                server_addr.to_string(),
+                ServerConnection {
+                    server_addr: server_addr.to_string(),
+                    sender: tx,
+                    crypto: Some(crypto.clone()),
+                    connected: true,
+                },
+            );
         }
 
         // Start heartbeat task
@@ -195,13 +228,13 @@ impl Client {
             let connections = self.connections.clone();
             let server_addr = server_addr.to_string();
             let heartbeat_interval = self.config.heartbeat_interval;
-            
+
             tokio::spawn(async move {
                 let mut interval = interval(Duration::from_secs(heartbeat_interval));
-                
+
                 loop {
                     interval.tick().await;
-                    
+
                     let connections_guard = connections.lock().await;
                     if let Some(conn) = connections_guard.get(&server_addr) {
                         if conn.connected {
@@ -225,12 +258,12 @@ impl Client {
 
         // Handle incoming messages
         let (mut stream_read, mut stream_write) = stream.into_split();
-        
+
         let read_task = {
             let connections = self.connections.clone();
             let local_connections = self.local_connections.clone();
             let server_addr = server_addr.to_string();
-            
+
             tokio::spawn(async move {
                 let mut frame_reader = FrameReader::new();
                 let mut buffer = [0u8; 4096];
@@ -240,15 +273,16 @@ impl Client {
                         Ok(0) => break,
                         Ok(n) => {
                             frame_reader.feed_data(&buffer[..n]);
-                            
+
                             while let Some(frame) = frame_reader.try_read_frame().unwrap_or(None) {
                                 Self::handle_server_message(
-                                    frame.message, 
-                                    &connections, 
+                                    frame.message,
+                                    &connections,
                                     &local_connections,
                                     &service_configs_owned,
-                                    &server_addr
-                                ).await;
+                                    &server_addr,
+                                )
+                                .await;
                             }
                         }
                         Err(e) => {
@@ -312,38 +346,54 @@ impl Client {
         server_addr: &str,
     ) {
         match message {
-            Message::ProxyConfigResponse { success, proxy_id, error } => {
+            Message::ProxyConfigResponse {
+                success,
+                proxy_id,
+                error,
+            } => {
                 if success {
                     if let Some(id) = proxy_id {
-                        log_info!(&format!("Service configuration accepted by {}: {}", server_addr, id));
+                        log_info!("Service configuration accepted by {}: {}", server_addr, id);
                     } else {
-                        log_info!(&format!("Service configuration accepted by {}", server_addr));
+                        log_info!("Service configuration accepted by {}", server_addr);
                     }
                 } else {
-                    error!("Service configuration rejected by {}: {}", 
-                           server_addr, error.unwrap_or_else(|| "Unknown error".to_string()));
+                    error!(
+                        "Service configuration rejected by {}: {}",
+                        server_addr,
+                        error.unwrap_or_else(|| "Unknown error".to_string())
+                    );
                 }
             }
             Message::HeartbeatResponse { timestamp } => {
                 debug!("Heartbeat response from {}: {}", server_addr, timestamp);
             }
-            Message::NewConnection { proxy_id, connection_id } => {
-                log_info!(&format!("New connection request from {}: proxy={}, conn={}", 
-                      server_addr, proxy_id, connection_id));
-                info!("New connection: proxy={}, conn={}", 
-                    format_uuid(&proxy_id, "proxy"), 
+            Message::NewConnection {
+                proxy_id,
+                connection_id,
+            } => {
+                log_info!(
+                    "New connection request from {}: proxy={}, conn={}",
+                    server_addr,
+                    proxy_id,
+                    connection_id
+                );
+                console_info!(
+                    "New connection: proxy={}, conn={}",
+                    format_uuid(&proxy_id, "proxy"),
                     format_uuid(&connection_id, "conn")
                 );
-                
+
                 // Find the corresponding service config
                 if let Some(service_config) = service_configs.first() {
                     // Establish local connection
-                    let local_addr = format!("{}:{}", service_config.local_ip, service_config.local_port);
-                    
+                    let local_addr =
+                        format!("{}:{}", service_config.local_ip, service_config.local_port);
+
                     match TcpStream::connect(&local_addr).await {
                         Ok(local_stream) => {
-                            log_info!(&format!("Connected to local service at {}", local_addr));
-                            
+                            log_info!("Connected to local service at {}", local_addr);
+
                             // Send success response
                             let connections_guard = connections.lock().await;
                             if let Some(conn) = connections_guard.get(server_addr) {
@@ -354,13 +404,13 @@ impl Client {
                                 };
                                 let _ = conn.sender.send(response);
                             }
-                            
+
                             // Start handling the local connection
                             let connections_clone = connections.clone();
                             let local_connections_clone = local_connections.clone();
                             let server_addr_clone = server_addr.to_string();
                             let connection_id_clone = connection_id.clone();
-                            
+
                             tokio::spawn(async move {
                                 Self::handle_local_connection(
                                     local_stream,
@@ -368,19 +418,23 @@ impl Client {
                                     local_connections_clone,
                                     server_addr_clone,
                                     connection_id_clone,
-                                ).await;
+                                )
+                                .await;
                             });
                         }
                         Err(e) => {
                             error!("Failed to connect to local service {}: {}", local_addr, e);
-                            
+
                             // Send error response
                             let connections_guard = connections.lock().await;
                             if let Some(conn) = connections_guard.get(server_addr) {
                                 let response = Message::ConnectionResponse {
                                     connection_id,
                                     success: false,
-                                    error: Some(format!("Failed to connect to local service: {}", e)),
+                                    error: Some(format!(
+                                        "Failed to connect to local service: {}",
+                                        e
+                                    )),
                                 };
                                 let _ = conn.sender.send(response);
                             }
@@ -388,9 +442,17 @@ impl Client {
                     }
                 }
             }
-            Message::Data { connection_id, data } => {
-                debug!("Data from {}: conn={}, len={}", server_addr, connection_id, data.len());
-                
+            Message::Data {
+                connection_id,
+                data,
+            } => {
+                debug!(
+                    "Data from {}: conn={}, len={}",
+                    server_addr,
+                    connection_id,
+                    data.len()
+                );
+
                 // Forward data to local connection
                 let local_connections_guard = local_connections.lock().await;
                 if let Some(local_conn) = local_connections_guard.get(&connection_id) {
@@ -402,14 +464,17 @@ impl Client {
                 }
             }
             Message::CloseConnection { connection_id } => {
-                log_info!(&format!("Close connection from {}: {}", server_addr, connection_id));
-                
+                log_info!("Close connection from {}: {}", server_addr, connection_id);
+
                 // Remove local connection
                 let mut local_connections_guard = local_connections.lock().await;
                 local_connections_guard.remove(&connection_id);
             }
             _ => {
-                warn!("Unexpected message from server {}: {:?}", server_addr, message);
+                warn!(
+                    "Unexpected message from server {}: {:?}",
+                    server_addr, message
+                );
             }
         }
     }
@@ -423,32 +488,30 @@ impl Client {
         connection_id: String,
     ) {
         let (mut stream_read, mut stream_write) = stream.into_split();
-        
+
         // Channel for receiving data from server
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
-        
+
         // Store local connection info
         {
             let mut local_connections_guard = local_connections.lock().await;
-            local_connections_guard.insert(connection_id.clone(), LocalConnection {
-                sender: tx,
-            });
+            local_connections_guard.insert(connection_id.clone(), LocalConnection { sender: tx });
         }
-        
+
         let connection_id_clone = connection_id.clone();
-        let connections_clone = connections.clone();
-        let local_connections_clone = local_connections.clone();
+        let _connections_clone = connections.clone();
+        let _local_connections_clone = local_connections.clone();
 
         // Task to read from local service and send to server
         let read_task = tokio::spawn(async move {
             let mut buffer = [0u8; 4096];
-            
+
             loop {
                 match stream_read.read(&mut buffer).await {
                     Ok(0) => {
                         // Connection closed
                         debug!("Local connection {} closed", connection_id);
-                        
+
                         // Notify server about connection close
                         let connections_guard = connections.lock().await;
                         if let Some(conn) = connections_guard.get(&server_addr) {
@@ -463,7 +526,7 @@ impl Client {
                         // Forward data to server
                         let data = buffer[..n].to_vec();
                         debug!("Forwarding {} bytes from local service to server", n);
-                        
+
                         let connections_guard = connections.lock().await;
                         if let Some(conn) = connections_guard.get(&server_addr) {
                             let message = Message::Data {
@@ -509,7 +572,7 @@ impl Client {
             let mut local_connections_guard = local_connections.lock().await;
             local_connections_guard.remove(&connection_id_clone);
         }
-        
+
         debug!("Local connection {} handler finished", connection_id_clone);
     }
 }
