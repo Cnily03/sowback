@@ -10,8 +10,9 @@ use uuid::Uuid;
 
 use crate::config::ServerConfig;
 use crate::logging::{format_service_config, format_uuid};
+use crate::utils::crypto::{sha256_with_salt, MAGIC_SALT};
 use crate::utils::{CryptoContext, Frame, FrameReader, Message};
-use crate::{console_info, debug, error, info, log_info, warn};
+use crate::{console_info, debug, error, info, log_debug, log_info, warn};
 
 /// Main server structure that handles client connections and proxy management
 pub struct Server {
@@ -66,8 +67,9 @@ impl Server {
     /// Starts the server and begins accepting client connections
     pub async fn run(&self) -> Result<()> {
         let listener = TcpListener::bind(&self.config.listen_addr).await?;
-        info!("Server ready, listening on {}", self.config.listen_addr);
+        log_info!("Server ready, listening on {}", self.config.listen_addr);
 
+        // listen for client to connect
         loop {
             match listener.accept().await {
                 Ok((stream, addr)) => {
@@ -87,12 +89,13 @@ impl Server {
 
     /// Handles a single client connection through its entire lifecycle
     async fn handle_client(&self, mut stream: TcpStream, addr: SocketAddr) -> Result<()> {
-        log_info!("New client connection from {}", addr);
+        log_debug!("New client connection from {}", addr);
 
         // Read authentication message
         let mut frame_reader = FrameReader::new();
         let mut buffer = [0u8; 4096];
 
+        // take 30s to receive buffer data
         let n = timeout(Duration::from_secs(30), stream.read(&mut buffer)).await??;
         if n == 0 {
             return Err(anyhow::anyhow!("Connection closed during auth"));
@@ -105,12 +108,15 @@ impl Server {
             None => return Err(anyhow::anyhow!("Incomplete auth frame")),
         };
 
+        // --- Parse authentication ---
+
         let (client_id, crypto) = match frame.message {
-            Message::Auth { token, client_id } => {
-                if token != self.config.token {
+            Message::Auth { enc_token, client_id, name: client_name } => {
+                if enc_token != sha256_with_salt(self.config.token.as_bytes(), MAGIC_SALT) {
                     let response = Message::AuthResponse {
                         success: false,
                         session_key: None,
+                        name: self.config.name.clone(),
                         error: Some("Invalid token".to_string()),
                     };
                     let response_frame = Frame::new(response);
@@ -119,26 +125,28 @@ impl Server {
                 }
 
                 // Derive session key
-                let session_key = CryptoContext::derive_session_key(&token, &client_id)?;
+                let session_key = CryptoContext::derive_session_key(&self.config.token, &client_id)?;
                 let crypto = Arc::new(CryptoContext::new(&session_key)?);
 
                 // Send success response
                 let response = Message::AuthResponse {
                     success: true,
                     session_key: Some(session_key.clone()),
+                    name: self.config.name.clone(),
                     error: None,
                 };
                 let response_frame = Frame::new(response);
                 stream.write_all(&response_frame.serialize()?).await?;
 
                 log_info!("Client {} authenticated successfully", client_id);
-                console_info!("Client {} authenticated", format_uuid(&client_id, "client"));
+                // console_info!("Client {} authenticated", format_uuid(&client_id, "client")); TODO:
                 (client_id, crypto)
             }
             _ => return Err(anyhow::anyhow!("Expected auth message")),
         };
 
-        // Create client connection
+        // --- Create client connection ---
+
         let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
         let client_conn = ClientConnection {
             client_id: client_id.clone(),
@@ -147,17 +155,21 @@ impl Server {
             proxies: HashMap::new(),
         };
 
-        self.clients
-            .write()
-            .await
-            .insert(client_id.clone(), client_conn);
+        {
+            let mut clients_guard = self.clients.write().await;
+            // if the client_id has been created in the pool, reject
+            if clients_guard.contains_key(&client_id) {
+                return Err(anyhow::anyhow!("Client ID {} already exists", client_id));
+            }
+            clients_guard.insert(client_id.clone(), client_conn);
+        }
 
         // Handle incoming messages from client
         let clients = self.clients.clone();
         let proxy_listeners = self.proxy_listeners.clone();
         let proxy_connections = self.proxy_connections.clone();
         let client_id_clone = client_id.clone();
-        let bind_addr = self.config.bind_addr.clone();
+        let bind_host = self.config.bind_host.clone();
 
         let (mut stream_read, mut stream_write) = stream.into_split();
 
@@ -185,7 +197,7 @@ impl Server {
                                     &clients,
                                     &proxy_listeners,
                                     &proxy_connections,
-                                    &bind_addr,
+                                    &bind_host,
                                 )
                                 .await
                                 {
@@ -335,7 +347,7 @@ impl Server {
         clients: &Arc<RwLock<HashMap<String, ClientConnection>>>,
         proxy_listeners: &Arc<RwLock<HashMap<u16, ProxyListenerInfo>>>,
         proxy_connections: &Arc<RwLock<HashMap<String, ProxyConnectionInfo>>>,
-        bind_addr: &str,
+        bind_host: &str,
     ) -> Result<()> {
         match message {
             Message::Data {
@@ -404,7 +416,7 @@ impl Server {
                 // Start proxy listener if not already listening on this port
                 let mut listeners = proxy_listeners.write().await;
                 if !listeners.contains_key(&remote_port) {
-                    let listen_addr = format!("{}:{}", bind_addr, remote_port);
+                    let listen_addr = format!("{}:{}", bind_host, remote_port);
                     match TcpListener::bind(&listen_addr).await {
                         Ok(listener) => {
                             let listener = Arc::new(listener);

@@ -240,7 +240,7 @@ This would:
 ```toml
 [server]
 listen_addr = "0.0.0.0:7000"
-bind_addr = "0.0.0.0"
+bind_host = "0.0.0.0"
 token = "your-secret-token"
 max_clients = 100
 name = "main-server"
@@ -278,7 +278,7 @@ sowback listen --config /etc/sowback/server.toml --token new-token --verbose
 # High-performance server configuration
 [server]
 listen_addr = "0.0.0.0:7000"
-bind_addr = "0.0.0.0"
+bind_host = "0.0.0.0"
 token = "your-secret-token"
 max_clients = 1000
 worker_threads = 8

@@ -10,36 +10,58 @@ pub struct Config {
 }
 
 /// Configuration for server mode operation
+/// ```bash
+/// sowback listen
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
-    pub listen_addr: String,
-    pub bind_addr: String,
-    pub token: String,
-    pub max_clients: usize,
+    // Specify a server name for human to identify (not unique)
     pub name: Option<String>,
+    /// Port or address
+    pub listen_addr: String,
+    /// Host to bind the server
+    pub bind_host: String,
+    /// For authentication and cryptography
+    pub token: String,
+    /// Maximum number of clients
+    pub max_clients: usize,
+    /// Log file path
     pub log_file: Option<String>,
 }
 
 /// Configuration for client mode operation
+/// ```bash
+/// sowback connect
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientConfig {
-    pub servers: Vec<String>,
-    pub token: String,
-    pub services: Vec<String>,
-    pub reconnect_interval: u64,
-    pub heartbeat_interval: u64,
+    /// Specify a client name for human to identify (not unique)
     pub name: Option<String>,
+    /// List of server addresses to connect to
+    pub servers: Vec<String>,
+    /// For authentication and cryptography
+    pub token: String,
+    /// List of services to proxy to all servers
+    pub services: Vec<ServiceConfig>,
+    /// Interval to reconnect to servers
+    pub reconnect_interval: u64,
+    /// Interval for sending heartbeat messages
+    pub heartbeat_interval: u64,
+    /// Log file path
     pub log_file: Option<String>,
 }
+
+
+// --- Default configuration ---
 
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
+            name: None,
             listen_addr: "0.0.0.0:7000".to_string(),
-            bind_addr: "0.0.0.0".to_string(),
+            bind_host: "0.0.0.0".to_string(),
             token: "".to_string(), // No default token - must be provided
             max_clients: 100,
-            name: None,
             log_file: None,
         }
     }
@@ -48,12 +70,12 @@ impl Default for ServerConfig {
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
-            servers: vec!["127.0.0.1:7000".to_string()],
+            name: None,
+            servers: vec![], // must be provided at least one server
             token: "".to_string(), // No default token - must be provided
             services: vec![],
             reconnect_interval: 5,
             heartbeat_interval: 30,
-            name: None,
             log_file: None,
         }
     }
@@ -68,8 +90,11 @@ impl Config {
     }
 }
 
-/// Configuration for a single service to be forwarded
-#[derive(Debug, Clone)]
+// ------------------------------------------------
+
+/// Configuration for a single service to be forwarded.
+/// - Related to cli option `--service`
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceConfig {
     pub name: String,
     pub local_ip: String,
@@ -79,7 +104,8 @@ pub struct ServiceConfig {
 
 impl ServiceConfig {
     /// Parses a service configuration string in the format "local_ip:local_port:remote_port"
-    pub fn parse(service_str: &str) -> Result<Self> {
+    pub fn parse_cli(service_str: &str) -> Result<Self> {
+        // [local_ip]:[local_port]:[remote_port]
         let parts: Vec<&str> = service_str.split(':').collect();
         if parts.len() != 3 {
             return Err(anyhow::anyhow!(

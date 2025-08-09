@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::config::{ClientConfig, ServiceConfig};
 use crate::logging::{format_service_config, format_uuid};
+use crate::utils::crypto::{sha256_with_salt, MAGIC_SALT};
 use crate::utils::{CryptoContext, Frame, FrameReader, Message};
 use crate::{console_info, debug, error, info, log_info, warn};
 
@@ -46,26 +47,18 @@ impl Client {
     /// Starts the client and maintains connections to all configured servers
     pub async fn run(&self) -> Result<()> {
         log_info!("Starting client with ID: {}", self.client_id);
-        console_info!(
-            "sowback client started, ID: {}",
-            format_uuid(&self.client_id, "client")
-        );
+        // console_info!(
+        //     "sowback client started, ID: {}",
+        //     format_uuid(&self.client_id, "client")
+        // ); TODO:
 
         // Parse service configurations
-        let mut service_configs = Vec::new();
-        for service_str in &self.config.services {
-            match ServiceConfig::parse(service_str) {
-                Ok(config) => service_configs.push(config),
-                Err(e) => {
-                    error!("Invalid service configuration '{}': {}", service_str, e);
-                    continue;
-                }
-            }
-        }
+        let service_configs = &self.config.services;
 
         // Connect to all servers
         let mut tasks = Vec::new();
 
+        // create client for each server
         for server_addr in &self.config.servers {
             let client = self.clone();
             let server_addr = server_addr.clone();
@@ -126,10 +119,15 @@ impl Client {
         service_configs: &[ServiceConfig],
     ) -> Result<()> {
         let mut stream = TcpStream::connect(server_addr).await?;
-        info!("Connected to server: {}", server_addr);
+        log_info!("Connected to server: {}", server_addr);
 
-        // Send authentication
-        let auth_message = Message::new_auth(&self.config.token, &self.client_id);
+        // --- Send authentication ---
+
+        let auth_message = Message::new_auth(
+            &self.config.token,
+            &self.client_id,
+            self.config.name.clone(),
+        );
         let auth_frame = Frame::new(auth_message);
         stream.write_all(&auth_frame.serialize()?).await?;
 
@@ -153,6 +151,7 @@ impl Client {
             Message::AuthResponse {
                 success,
                 session_key,
+                name: server_name,
                 error,
             } => {
                 if !success {
@@ -163,15 +162,21 @@ impl Client {
                 }
 
                 let session_key =
-                    session_key.ok_or_else(|| anyhow::anyhow!("No session key provided"))?;
+                    session_key.ok_or_else(|| anyhow::anyhow!("No session key received"))?;
                 let crypto = Arc::new(CryptoContext::new(&session_key)?);
-                log_info!("Authentication successful for server: {}", server_addr);
+                log_info!(
+                    server_addr = server_addr,
+                    server_name = server_name,
+                    "Authentication successful for server: {}",
+                    server_addr
+                );
                 crypto
             }
             _ => return Err(anyhow::anyhow!("Expected auth response")),
         };
 
-        // Send service configurations
+        // --- Send service configurations ---
+
         for service_config in service_configs {
             let service_str = format!(
                 "{}:{}:{}",
@@ -204,7 +209,8 @@ impl Client {
             );
         }
 
-        // Create connection channels
+        // -- Create connection channels --
+
         let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
 
         // Store connection

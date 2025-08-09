@@ -1,16 +1,24 @@
 use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+
+use crate::utils::crypto::{sha256_with_salt, MAGIC_SALT};
 
 /// Messages exchanged between client and server
 #[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub enum Message {
     /// Client authentication request
-    Auth { token: String, client_id: String },
+    Auth {
+        enc_token: Vec<u8>,
+        client_id: String,
+        /// client name
+        name: Option<String>,
+    },
     /// Server authentication response
     AuthResponse {
         success: bool,
         session_key: Option<Vec<u8>>,
+        /// server name
+        name: Option<String>,
         error: Option<String>,
     },
     /// Client proxy configuration
@@ -53,10 +61,11 @@ pub enum Message {
 
 impl Message {
     /// Creates a new authentication message
-    pub fn new_auth(token: &str, client_id: &str) -> Self {
+    pub fn new_auth(token: &str, client_id: &str, name: Option<String>) -> Self {
         Message::Auth {
-            token: token.to_string(),
-            client_id: Uuid::new_v4().to_string(),
+            enc_token: sha256_with_salt(token.as_bytes(), MAGIC_SALT),
+            client_id: client_id.to_string(),
+            name,
         }
     }
 

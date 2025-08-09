@@ -3,9 +3,12 @@ use clap::{Parser, Subcommand};
 use tracing::info;
 
 use crate::client::Client;
-use crate::config::{ClientConfig, Config, ServerConfig};
+use crate::config::{ClientConfig, Config, ServerConfig, ServiceConfig};
+use crate::log_info;
 use crate::logging::init_logger;
 use crate::server::Server;
+
+// --- Clap ---
 
 #[derive(Parser)]
 #[command(name = "sowback")]
@@ -30,6 +33,10 @@ struct Cli {
 enum Commands {
     /// Start the server (listen mode)
     Listen {
+        /// Server name for human identification (not unique)
+        #[arg(long)]
+        name: Option<String>,
+
         /// Configuration file path
         #[arg(short, long)]
         config: Option<String>,
@@ -37,20 +44,20 @@ enum Commands {
         /// Listen address (default: 0.0.0.0:7000)
         address: Option<String>,
 
-        /// Bind address for services (default: 0.0.0.0)
+        /// Bind host for services (default: 0.0.0.0)
         #[arg(long)]
         bind: Option<String>,
 
         /// Authentication token (required)
         #[arg(long)]
         token: Option<String>,
-
-        /// Server name for identification
-        #[arg(long)]
-        name: Option<String>,
     },
     /// Connect to server (client mode)
     Connect {
+        /// Client name for human identification (not unique)
+        #[arg(long)]
+        name: Option<String>,
+
         /// Configuration file path
         #[arg(short, long)]
         config: Option<String>,
@@ -65,13 +72,10 @@ enum Commands {
         /// Service configurations: local_ip:local_port:remote_port
         #[arg(short, long, action = clap::ArgAction::Append)]
         service: Vec<String>,
-
-        /// Client name for identification
-        #[arg(long)]
-        name: Option<String>,
     },
 }
 
+/// Execute entry
 pub async fn execute() -> Result<()> {
     let cli = Cli::parse();
 
@@ -79,12 +83,13 @@ pub async fn execute() -> Result<()> {
     init_logger(cli.log.clone(), cli.verbose);
 
     match cli.command {
+        // server listen
         Commands::Listen {
+            name,
             config,
             address,
             bind,
             token,
-            name,
         } => {
             let mut server_config = if let Some(config_path) = config {
                 Config::from_file(&config_path)?.server.unwrap_or_default()
@@ -96,8 +101,8 @@ pub async fn execute() -> Result<()> {
             if let Some(addr) = address {
                 server_config.listen_addr = addr;
             }
-            if let Some(bind_addr) = bind {
-                server_config.bind_addr = bind_addr;
+            if let Some(bind_host) = bind {
+                server_config.bind_host = bind_host;
             }
             if let Some(auth_token) = token {
                 server_config.token = auth_token;
@@ -112,21 +117,23 @@ pub async fn execute() -> Result<()> {
                 server_config.log_file = Some(log_file.clone());
             }
 
-            let display_name = server_config.name.as_deref().unwrap_or("server");
-            info!(
+            log_info!(
                 "Server '{}' listening on {}. Services will bind on {}.",
-                display_name, server_config.listen_addr, server_config.bind_addr
+                server_config.name.as_deref().unwrap_or("(server)"),
+                server_config.listen_addr,
+                server_config.bind_host
             );
 
             let server = Server::new(server_config);
             server.run().await?;
         }
+        // client connect
         Commands::Connect {
+            name,
             config,
             servers,
             token,
             service,
-            name,
         } => {
             let mut client_config = if let Some(config_path) = config {
                 Config::from_file(&config_path)?.client.unwrap_or_default()
@@ -144,16 +151,20 @@ pub async fn execute() -> Result<()> {
                 return Err(anyhow::anyhow!("Token is required. Please provide --token"));
             }
             if !service.is_empty() {
-                client_config.services = service;
+                client_config.services = service
+                    .iter()
+                    .map(|svc_str| ServiceConfig::parse_cli(svc_str))
+                    .collect::<Result<Vec<ServiceConfig>>>()?;
             }
             if let Some(client_name) = name {
                 client_config.name = Some(client_name);
             }
 
-            let display_name = client_config.name.as_deref().unwrap_or("client");
-            info!(
+            let client_name = client_config.name.as_deref().unwrap_or("client");
+            log_info!(
                 "Client '{}' connecting to servers: {:?}",
-                display_name, client_config.servers
+                client_name,
+                client_config.servers
             );
 
             let client = Client::new(client_config);

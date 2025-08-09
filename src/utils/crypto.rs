@@ -2,7 +2,17 @@ use aes_gcm::{aead::Aead, Aes256Gcm, Key, KeyInit, Nonce};
 use anyhow::{anyhow, Result};
 use hkdf::Hkdf;
 use rand::RngCore;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
+
+pub const MAGIC_SALT: &[u8] = b".Kita_Ikuyo.^_^.";
+
+/// SHA-256 with salt
+pub fn sha256_with_salt(data: &[u8], salt: &[u8]) -> Vec<u8> {
+    let mut hasher = Sha256::default();
+    hasher.update(data);
+    hasher.update(salt);
+    hasher.finalize().to_vec()
+}
 
 /// Cryptographic context for secure communication between client and server
 pub struct CryptoContext {
@@ -72,8 +82,8 @@ mod tests {
 
     #[test]
     fn test_crypto_roundtrip() {
-        let token = "test_token";
-        let client_id = "test_client";
+        let token = "ciallo";
+        let client_id = "0058454c-ba2f-40de-8390-c1bcfc65754f";
 
         let session_key = CryptoContext::derive_session_key(token, client_id).unwrap();
         let crypto = CryptoContext::new(&session_key).unwrap();
