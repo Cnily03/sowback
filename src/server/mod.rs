@@ -9,10 +9,8 @@ use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
 use crate::config::ServerConfig;
-use crate::crypto::CryptoContext;
 use crate::logging::{format_service_config, format_uuid};
-use crate::protocol::{Frame, Message};
-use crate::utils::FrameReader;
+use crate::utils::{CryptoContext, Frame, FrameReader, Message};
 use crate::{console_info, debug, error, info, log_info, warn};
 
 /// Main server structure that handles client connections and proxy management

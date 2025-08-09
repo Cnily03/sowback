@@ -1,4 +1,4 @@
-use crate::protocol::Frame;
+use crate::utils::protocol::Frame;
 use anyhow::Result;
 
 /// Utility for reading framed messages from a stream buffer

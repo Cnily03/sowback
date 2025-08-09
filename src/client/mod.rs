@@ -8,10 +8,8 @@ use tokio::time::{interval, timeout, Duration};
 use uuid::Uuid;
 
 use crate::config::{ClientConfig, ServiceConfig};
-use crate::crypto::CryptoContext;
 use crate::logging::{format_service_config, format_uuid};
-use crate::protocol::{Frame, Message};
-use crate::utils::FrameReader;
+use crate::utils::{CryptoContext, Frame, FrameReader, Message};
 use crate::{console_info, debug, error, info, log_info, warn};
 
 /// Main client structure that manages connections to multiple servers
