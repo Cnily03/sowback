@@ -1,5 +1,7 @@
+use std::env;
+
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 mod client;
 mod config;

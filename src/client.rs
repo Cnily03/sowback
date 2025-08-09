@@ -361,7 +361,7 @@ impl Client {
                     error!(
                         "Service configuration rejected by {}: {}",
                         server_addr,
-                        error.unwrap_or_else(|| "Unknown error".to_string())
+                        error.clone().unwrap_or_else(|| "Unknown error".to_string())
                     );
                 }
             }
