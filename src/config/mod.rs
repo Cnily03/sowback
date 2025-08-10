@@ -51,7 +51,6 @@ pub struct ClientConfig {
     pub log_file: Option<String>,
 }
 
-
 // --- Default configuration ---
 
 impl Default for ServerConfig {
@@ -71,7 +70,7 @@ impl Default for ClientConfig {
     fn default() -> Self {
         Self {
             name: None,
-            servers: vec![], // must be provided at least one server
+            servers: vec![],       // must be provided at least one server
             token: "".to_string(), // No default token - must be provided
             services: vec![],
             reconnect_interval: 5,

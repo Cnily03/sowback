@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::config::{ClientConfig, ServiceConfig};
 use crate::logging::{format_service_config, format_uuid};
 use crate::utils::crypto::{sha256_with_salt, MAGIC_SALT};
+use crate::utils::protocol::ProxyConfigOpCode;
 use crate::utils::{CryptoContext, Frame, FrameReader, Message};
 use crate::{console_info, debug, error, info, log_info, warn};
 
@@ -184,6 +185,7 @@ impl Client {
             );
 
             let service_message = Message::ProxyConfig {
+                op: ProxyConfigOpCode::Update,
                 local_ip: service_config.local_ip.clone(),
                 local_port: service_config.local_port,
                 remote_port: service_config.remote_port,

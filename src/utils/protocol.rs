@@ -3,6 +3,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::utils::crypto::{sha256_with_salt, MAGIC_SALT};
 
+/// ProxyConfig Operation
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, PartialEq, Eq)]
+pub enum ProxyConfigOpCode {
+    /// Delete a proxy configuration
+    Delete,
+    /// Update or add a proxy configuration
+    Update,
+}
+
 /// Messages exchanged between client and server
 #[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub enum Message {
@@ -23,6 +32,8 @@ pub enum Message {
     },
     /// Client proxy configuration
     ProxyConfig {
+        // enum: Delete, Update
+        op: ProxyConfigOpCode,
         local_ip: String,
         local_port: u16,
         remote_port: u16,
