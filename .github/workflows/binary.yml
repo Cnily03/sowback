@@ -73,7 +73,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sowback-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/sowback
+          # both windows and linux
+          path: |
+            target/${{ matrix.target }}/release/sowback
+            target/${{ matrix.target }}/release/sowback.exe
           retention-days: 1
 
   clippy-check:
